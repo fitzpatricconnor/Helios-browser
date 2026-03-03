@@ -46,6 +46,37 @@ func findOnPageJS(_ term: String) -> String {
     "(function(){window.getSelection().removeAllRanges();if(!'\(term)')return;document.body.innerHTML=document.body.innerHTML.replace(new RegExp('\(term)','gi'),'<mark style=\"background:#6b8eff;color:#fff;border-radius:3px;padding:1px 3px\">$&</mark>');var f=document.querySelector('mark');if(f)f.scrollIntoView({behavior:'smooth',block:'center'});})();"
 }
 
+// MARK: - Proxy dictionary helper
+func proxyDictionary(ip: String, port: Int) -> [String: Any] {
+    return [
+        "HTTPEnable"  : 1,
+        "HTTPProxy"   : ip,
+        "HTTPPort"    : port,
+        "HTTPSEnable" : 1,
+        "HTTPSProxy"  : ip,
+        "HTTPSPort"   : port
+    ]
+}
+
+// MARK: - Silent auth delegate
+class SilentAuthDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        let method = challenge.protectionSpace.authenticationMethod
+        if method == NSURLAuthenticationMethodHTTPBasic ||
+            method == NSURLAuthenticationMethodHTTPDigest ||
+            method == NSURLAuthenticationMethodNTLM {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+        } else {
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
+}
+
 // MARK: - Scheme Handler
 class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
     let realScheme: String
@@ -66,14 +97,7 @@ class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
         let config = URLSessionConfiguration.ephemeral
         
         if let p = ProxyManager.shared.best {
-            config.connectionProxyDictionary = [
-                kCFNetworkProxiesHTTPEnable as String: 1,
-                kCFNetworkProxiesHTTPProxy  as String: p.ip,
-                kCFNetworkProxiesHTTPPort   as String: p.port,
-                "HTTPSEnable"              : 1,
-                "HTTPSProxy"               : p.ip,
-                "HTTPSPort"                : p.port
-            ]
+            config.connectionProxyDictionary = proxyDictionary(ip: p.ip, port: p.port)
             print("🔀 \(realURL.host ?? "?") via \(p.label)")
         }
         
@@ -93,27 +117,32 @@ class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
         )
         if let host = realURL.host { req.setValue(host, forHTTPHeaderField: "Host") }
         
-        URLSession(configuration: config).dataTask(with: req) { [weak self] data, response, error in
+        let session = URLSession(configuration: config, delegate: ProxyManager.shared.silentAuth, delegateQueue: nil)
+        
+        session.dataTask(with: req) { [weak self] (data: Data?, response: URLResponse?, error: Error?) in
             guard let self else { return }
+            defer { session.finishTasksAndInvalidate() }
             self.lock.lock(); let cancelled = self.cancelledTasks.contains(taskID); self.lock.unlock()
             if cancelled { return }
             
             if let error {
                 print("❌ \(realURL.host ?? "?"): \(error.localizedDescription)")
-                DispatchQueue.main.async {
-                    ProxyManager.shared.status  = "⚠️ Proxy failed — reconnecting…"
-                    ProxyManager.shared.isReady = false
-                    ProxyManager.shared.findBestProxy()
-                }
                 self.sendError(task: task, msg: error.localizedDescription)
                 return
             }
             guard let response else { self.sendError(task: task, msg: "No response"); return }
+            
+            if let http = response as? HTTPURLResponse, http.statusCode == 407 {
+                self.sendError(task: task, msg: "Proxy requires authentication.")
+                return
+            }
+            
             self.lock.lock(); let c2 = self.cancelledTasks.contains(taskID); self.lock.unlock()
             if c2 { return }
             task.didReceive(response)
             if let data, !data.isEmpty { task.didReceive(data) }
             task.didFinish()
+            DispatchQueue.main.async { ProxyManager.shared.stopCycling() }
             print("✅ \(realURL.host ?? "?") \(data?.count ?? 0) bytes")
         }.resume()
     }
@@ -161,10 +190,7 @@ class BrowserStore: ObservableObject {
         let prefs = WKPreferences()
         prefs.javaScriptCanOpenWindowsAutomatically = true
         config.preferences = prefs
-        
-        // HTTPS only — HTTP removed to satisfy ATS
         config.setURLSchemeHandler(ProxySchemeHandler(realScheme: "https"), forURLScheme: "proxy-https")
-        
         let cc = WKUserContentController()
         cc.addUserScript(WKUserScript(source: pageFixJS, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
         config.userContentController = cc
@@ -187,10 +213,8 @@ class BrowserStore: ObservableObject {
         loadPersisted()
     }
     
-    // MARK: - Load
     func load(_ raw: String) {
         var url = raw.trimmingCharacters(in: .whitespaces)
-        // Always upgrade to HTTPS so ATS allows it
         if url.hasPrefix("http://") { url = "https://" + url.dropFirst(7) }
         if !url.hasPrefix("https://") { url = "https://" + url }
         url = url.replacingOccurrences(of: "https://", with: "proxy-https://")
@@ -204,14 +228,18 @@ class BrowserStore: ObservableObject {
     func goForward() { if canGoFwd  { webView.goForward() } }
     func stop()      { webView.stopLoading(); isLoading = false }
     
-    func toggleDarkMode()   { isDarkMode.toggle();   webView.evaluateJavaScript(darkModeJS)  { _, _ in } }
-    func toggleReaderMode() { isReaderMode.toggle(); isReaderMode ? webView.evaluateJavaScript(readerModeJS) { _, _ in } : reload() }
+    func toggleDarkMode() { isDarkMode.toggle(); webView.evaluateJavaScript(darkModeJS) { _, _ in } }
+    func toggleReaderMode() {
+        isReaderMode.toggle()
+        if isReaderMode {
+            webView.evaluateJavaScript(readerModeJS) { _, _ in }
+        } else {
+            reload()
+        }
+    }
     func findOnPage(_ term: String) { webView.evaluateJavaScript(findOnPageJS(term)) { _, _ in } }
     
-    // MARK: - URL helpers
-    var cleanURL: String {
-        currentURL.replacingOccurrences(of: "proxy-https://", with: "https://")
-    }
+    var cleanURL: String { currentURL.replacingOccurrences(of: "proxy-https://", with: "https://") }
     var isBookmarked: Bool { bookmarks.contains { $0.url == cleanURL } }
     
     func toggleBookmark() {
@@ -231,7 +259,6 @@ class BrowserStore: ObservableObject {
     }
     func clearHistory() { history = []; savePersisted() }
     
-    // MARK: - Persistence
     private func savePersisted() {
         if let d = try? JSONEncoder().encode(bookmarks) { UserDefaults.standard.set(d, forKey: "orion_bookmarks") }
         if let d = try? JSONEncoder().encode(history)   { UserDefaults.standard.set(d, forKey: "orion_history")   }
@@ -254,13 +281,25 @@ class NavDelegate: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
     func webView(_ wv: WKWebView, didFinish _: WKNavigation!) {
         store?.isLoading = false; store?.errorMsg = nil
         store?.addHistory()
+        ProxyManager.shared.stopCycling()
         wv.evaluateJavaScript(pageFixJS) { _, _ in }
     }
     func webView(_ wv: WKWebView, didFailProvisionalNavigation _: WKNavigation!, withError error: Error) {
         let c = (error as NSError).code
         if c == NSURLErrorCancelled { return }
         store?.isLoading = false
-        store?.errorMsg  = "❌ Failed (error \(c))\nTap New Proxy to try a different one."
+        let pm = ProxyManager.shared
+        let proxyLabel = pm.best?.label ?? "unknown"
+        if pm.workingProxies.count > 1 && !pm.isCycling {
+            store?.errorMsg = "🔄 \(proxyLabel) failed — auto-trying others…"
+            pm.startCycling { [weak self] in
+                self?.store?.reload()
+            }
+        } else if pm.isCycling {
+            store?.errorMsg = "🔄 Trying \(proxyLabel)…\n\(pm.currentProxyIndex + 1)/\(pm.workingProxies.count) proxies"
+        } else {
+            store?.errorMsg = "❌ \(proxyLabel) failed (error \(c))\nTap New Proxy to search again."
+        }
     }
     func webView(_ wv: WKWebView, didFail _: WKNavigation!, withError error: Error) {
         if (error as NSError).code == NSURLErrorCancelled { return }
