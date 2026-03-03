@@ -74,16 +74,47 @@ struct ContentView: View {
                 }
                 Button { showProxySheet = true } label: {
                     HStack(spacing: 4) {
-                        if proxy.isReady { Circle().fill(Color.oGreen).frame(width: 6, height: 6) }
-                        else { ProgressView().progressViewStyle(CircularProgressViewStyle(tint: Color.oAccent)).scaleEffect(0.5) }
-                        Text(proxy.isReady ? "Proxy ✓" : "Searching…")
-                            .font(.system(size: 10, weight: .medium)).foregroundColor(Color.oMuted)
+                        if proxy.isCycling {
+                            ProgressView().progressViewStyle(CircularProgressViewStyle(tint: Color.oOrange)).scaleEffect(0.5)
+                        } else if proxy.isReady {
+                            Circle().fill(Color.oGreen).frame(width: 6, height: 6)
+                        } else {
+                            ProgressView().progressViewStyle(CircularProgressViewStyle(tint: Color.oAccent)).scaleEffect(0.5)
+                        }
+                        if proxy.isReady && !proxy.proxyCountry.isEmpty {
+                            Text(proxy.proxyCountry)
+                                .font(.system(size: 10, weight: .medium)).foregroundColor(Color.oMuted)
+                        } else if proxy.isCycling {
+                            Text("Trying…")
+                                .font(.system(size: 10, weight: .medium)).foregroundColor(Color.oOrange)
+                        } else {
+                            Text(proxy.isReady ? "Proxy ✓" : "Searching…")
+                                .font(.system(size: 10, weight: .medium)).foregroundColor(Color.oMuted)
+                        }
                     }
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(Color.oBorder.opacity(0.5)).clipShape(Capsule())
                 }
             }
             .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 6)
+            
+            // Show current proxy being used
+            if proxy.isReady, let best = proxy.best {
+                HStack(spacing: 4) {
+                    Image(systemName: "server.rack").font(.system(size: 8)).foregroundColor(Color.oAccent)
+                    Text("via \(best.label)")
+                        .font(.system(size: 9, design: .monospaced)).foregroundColor(Color.oMuted)
+                    if !proxy.proxyCountry.isEmpty {
+                        Text("· \(proxy.proxyCountry)")
+                            .font(.system(size: 9)).foregroundColor(Color.oMuted)
+                    }
+                    if proxy.workingProxies.count > 1 {
+                        Text("· \(proxy.workingProxies.count) available")
+                            .font(.system(size: 9)).foregroundColor(Color.oMuted)
+                    }
+                }
+                .padding(.horizontal, 14).padding(.bottom, 4)
+            }
             
             HStack(spacing: 6) {
                 Button { store.goBack() } label: {
@@ -208,9 +239,17 @@ struct ContentView: View {
             Text("Page Failed to Load").font(.system(size: 18, weight: .bold)).foregroundColor(Color.oText)
             Text(err).font(.system(size: 13)).foregroundColor(Color.oMuted)
                 .multilineTextAlignment(.center).padding(.horizontal, 30)
+            if proxy.isCycling {
+                ProgressView().progressViewStyle(CircularProgressViewStyle(tint: Color.oAccent)).scaleEffect(1.2)
+                    .padding(.top, 4)
+                Text("Auto-trying proxies…").font(.system(size: 11)).foregroundColor(Color.oMuted)
+            }
             HStack(spacing: 12) {
                 ActionButton(label: "Retry",     icon: "arrow.clockwise",                  color: Color.oAccent)  { store.reload() }
-                ActionButton(label: "New Proxy", icon: "antenna.radiowaves.left.and.right", color: Color.oOrange) { ProxyManager.shared.findBestProxy() }
+                ActionButton(label: "New Proxy", icon: "antenna.radiowaves.left.and.right", color: Color.oOrange) {
+                    proxy.stopCycling()
+                    ProxyManager.shared.findBestProxy()
+                }
             }
             Spacer()
         }
@@ -227,8 +266,29 @@ struct ContentView: View {
                         .font(.system(size: 13, weight: .semibold)).foregroundColor(Color.oText)
                 }
                 if let best = proxy.best {
-                    Text(best.label).font(.system(size: 12, design: .monospaced)).foregroundColor(Color.oAccent)
-                        .padding(8).background(Color.oBG).clipShape(RoundedRectangle(cornerRadius: 8))
+                    VStack(spacing: 4) {
+                        Text(best.label).font(.system(size: 12, design: .monospaced)).foregroundColor(Color.oAccent)
+                        if !proxy.proxyCountry.isEmpty {
+                            Text(proxy.proxyCountry).font(.system(size: 12)).foregroundColor(Color.oMuted)
+                        }
+                        if proxy.workingProxies.count > 1 {
+                            Text("\(proxy.workingProxies.count) proxies available")
+                                .font(.system(size: 10)).foregroundColor(Color.oMuted)
+                        }
+                    }
+                    .padding(8).background(Color.oBG).clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                if proxy.isCycling {
+                    HStack(spacing: 6) {
+                        ProgressView().progressViewStyle(CircularProgressViewStyle(tint: Color.oOrange)).scaleEffect(0.7)
+                        Text("Auto-cycling proxies…")
+                            .font(.system(size: 11)).foregroundColor(Color.oOrange)
+                    }
+                    Button {
+                        proxy.stopCycling()
+                    } label: {
+                        Text("Stop Cycling").font(.system(size: 12, weight: .semibold)).foregroundColor(Color.oRed)
+                    }
                 }
                 Divider().background(Color.oBorder)
                 VStack(alignment: .leading, spacing: 6) {
@@ -240,6 +300,7 @@ struct ContentView: View {
                     .padding(8).background(Color.oBG).clipShape(RoundedRectangle(cornerRadius: 8))
                     Button {
                         showProxySheet = false
+                        proxy.stopCycling()
                         ProxyManager.shared.findBestProxy()
                     } label: {
                         let name = allCountries.first { $0.id == proxy.selectedCountry }?.name ?? "All"
