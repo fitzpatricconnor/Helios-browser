@@ -156,18 +156,40 @@ class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
             self.lock.lock(); let c2 = self.cancelledTasks.contains(taskID); self.lock.unlock()
             if c2 { return }
             
-            // Build response with the real URL so WebView thinks content is from the real site
-            let mimeType = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type")
-                ?? response.mimeType
-                ?? "text/html"
-            let fakeResponse = URLResponse(
+            // Determine the correct Content-Type
+            var contentType = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? "text/html; charset=utf-8"
+
+            // If Content-Type doesn't say HTML but the data looks like HTML, force it
+            if !contentType.lowercased().contains("text/html"),
+               let dataStr = String(data: data.prefix(500), encoding: .utf8) {
+                let lower = dataStr.lowercased()
+                if lower.contains("<!doctype html") || lower.contains("<html") {
+                    contentType = "text/html; charset=utf-8"
+                }
+            }
+
+            // If Content-Type has no charset and it's text, add charset
+            if contentType.lowercased().hasPrefix("text/") && !contentType.lowercased().contains("charset") {
+                contentType += "; charset=utf-8"
+            }
+
+            // Build an HTTPURLResponse so WKWebView properly renders the content
+            let headers: [String: String] = [
+                "Content-Type": contentType,
+                "Content-Length": "\(data.count)",
+                "Access-Control-Allow-Origin": "*",
+            ]
+            guard let httpResponse = HTTPURLResponse(
                 url: realURL,
-                mimeType: mimeType,
-                expectedContentLength: data.count,
-                textEncodingName: "utf-8"
-            )
-            
-            task.didReceive(fakeResponse)
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: headers
+            ) else {
+                self.sendError(task: task, msg: "Failed to build response")
+                return
+            }
+
+            task.didReceive(httpResponse)
             task.didReceive(data)
             task.didFinish()
             DispatchQueue.main.async { ProxyManager.shared.stopCycling() }
