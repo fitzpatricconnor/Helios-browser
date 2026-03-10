@@ -94,49 +94,39 @@ class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
         guard let realURL = comps.url else { sendError(task: task, msg: "Bad URL"); return }
 
         let taskID = ObjectIdentifier(task)
-        let pm = ProxyManager.shared
+        let pm     = ProxyManager.shared
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest  = 30
         config.timeoutIntervalForResource = 45
-        
-        let fetchURL: URL
+
         let session: URLSession
-        let useCustomProxy = !pm.customServers.isEmpty && pm.best != nil && pm.best!.port != 0
-        
-        if useCustomProxy, let p = pm.best {
-            // Custom server — use traditional connectionProxyDictionary
-            config.connectionProxyDictionary = proxyDictionary(ip: p.ip, port: p.port)
-            fetchURL = realURL
+        if pm.isDirectMode {
+            // Direct Mode — plain request, no proxy
             session = URLSession(configuration: config, delegate: pm.silentAuth, delegateQueue: nil)
-            print("🔀 \(realURL.host ?? "?") via custom \(p.label)")
+            print("🌐 \(realURL.host ?? "?") direct")
+        } else if let p = pm.best {
+            // Route all traffic through the proxy via connectionProxyDictionary
+            config.connectionProxyDictionary = proxyDictionary(ip: p.ip, port: p.port)
+            session = URLSession(configuration: config, delegate: pm.silentAuth, delegateQueue: nil)
+            print("🔀 \(realURL.host ?? "?") via \(p.label)")
         } else {
-            // Web proxy API — rewrite URL through the proxy service
-            let proxied = pm.proxiedURL(for: realURL.absoluteString)
-            guard let pURL = URL(string: proxied) else {
-                sendError(task: task, msg: "Failed to build proxy URL")
-                return
-            }
-            fetchURL = pURL
-            session = URLSession(configuration: config)
-            let wp = pm.webProxies[pm.activeWebProxyIndex]
-            print("🔀 \(realURL.host ?? "?") via \(wp.name)")
+            sendError(task: task, msg: "No proxy available"); return
         }
-        
-        var req = URLRequest(url: fetchURL)
+
+        var req = URLRequest(url: realURL)
         req.httpMethod = task.request.httpMethod ?? "GET"
         req.httpBody   = task.request.httpBody
         req.setValue(
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
             forHTTPHeaderField: "User-Agent"
         )
-        req.setValue("https://helios-browser.app", forHTTPHeaderField: "Origin")
-        
+
         session.dataTask(with: req) { [weak self] (data: Data?, response: URLResponse?, error: Error?) in
             guard let self else { return }
             session.finishTasksAndInvalidate()
             self.lock.lock(); let cancelled = self.cancelledTasks.contains(taskID); self.lock.unlock()
             if cancelled { return }
-            
+
             if let error = error {
                 print("❌ \(realURL.host ?? "?"): \(error.localizedDescription)")
                 self.sendError(task: task, msg: error.localizedDescription)
@@ -146,50 +136,19 @@ class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
                 self.sendError(task: task, msg: "No response")
                 return
             }
-            
-            if let http = response as? HTTPURLResponse,
-               (http.statusCode == 403 || http.statusCode == 407 || http.statusCode == 429) {
-                self.sendError(task: task, msg: "Proxy blocked (HTTP \(http.statusCode))")
+
+            // Only 407 requires special handling — it means the proxy demands auth
+            // (which we cannot provide). 403/429 from the destination server are
+            // passed through to WKWebView so it can display them normally.
+            if let http = response as? HTTPURLResponse, http.statusCode == 407 {
+                self.sendError(task: task, msg: "Proxy auth required (HTTP 407)")
                 return
             }
-            
+
             self.lock.lock(); let c2 = self.cancelledTasks.contains(taskID); self.lock.unlock()
             if c2 { return }
-            
-            // Determine the correct Content-Type
-            var contentType = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? "text/html; charset=utf-8"
 
-            // If Content-Type doesn't say HTML but the data looks like HTML, force it
-            if !contentType.lowercased().contains("text/html"),
-               let dataStr = String(data: data.prefix(500), encoding: .utf8) {
-                let lower = dataStr.lowercased()
-                if lower.contains("<!doctype html") || lower.contains("<html") {
-                    contentType = "text/html; charset=utf-8"
-                }
-            }
-
-            // If Content-Type has no charset and it's text, add charset
-            if contentType.lowercased().hasPrefix("text/") && !contentType.lowercased().contains("charset") {
-                contentType += "; charset=utf-8"
-            }
-
-            // Build an HTTPURLResponse so WKWebView properly renders the content
-            let headers: [String: String] = [
-                "Content-Type": contentType,
-                "Content-Length": "\(data.count)",
-                "Access-Control-Allow-Origin": "*",
-            ]
-            guard let httpResponse = HTTPURLResponse(
-                url: realURL,
-                statusCode: 200,
-                httpVersion: "HTTP/1.1",
-                headerFields: headers
-            ) else {
-                self.sendError(task: task, msg: "Failed to build response")
-                return
-            }
-
-            task.didReceive(httpResponse)
+            task.didReceive(response)
             task.didReceive(data)
             task.didFinish()
             DispatchQueue.main.async { ProxyManager.shared.stopCycling() }
@@ -339,16 +298,20 @@ class NavDelegate: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         if c == NSURLErrorCancelled { return }
         store?.isLoading = false
         let pm = ProxyManager.shared
-        let proxyName = pm.webProxies[pm.activeWebProxyIndex].name
+        if pm.isDirectMode {
+            store?.errorMsg = "❌ Failed to load page (error \(c))"
+            return
+        }
+        let proxyLabel = pm.best?.label ?? "proxy"
         if pm.workingProxies.count > 1 && !pm.isCycling {
-            store?.errorMsg = "🔄 \(proxyName) failed — auto-trying others…"
+            store?.errorMsg = "🔄 \(proxyLabel) failed — auto-trying others…"
             pm.startCycling { [weak self] in
                 self?.store?.reload()
             }
         } else if pm.isCycling {
-            store?.errorMsg = "🔄 Trying \(proxyName)…\n\(pm.currentProxyIndex + 1)/\(pm.workingProxies.count) services"
+            store?.errorMsg = "🔄 Trying \(proxyLabel)…\n\(pm.currentProxyIndex + 1)/\(pm.workingProxies.count) proxies"
         } else {
-            store?.errorMsg = "❌ \(proxyName) failed (error \(c))\nTap New Proxy to try again."
+            store?.errorMsg = "❌ \(proxyLabel) failed (error \(c))\nTap New Proxy to try again."
         }
     }
     func webView(_ wv: WKWebView, didFail _: WKNavigation!, withError error: Error) {
