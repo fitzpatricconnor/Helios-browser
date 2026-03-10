@@ -263,11 +263,23 @@ class BrowserStore: ObservableObject {
         loadPersisted()
     }
     
-    func load(_ raw: String) {
+    private func resolveURL(_ raw: String) -> String {
         var url = raw.trimmingCharacters(in: .whitespaces)
         if url.hasPrefix("http://") { url = "https://" + url.dropFirst(7) }
-        if !url.hasPrefix("https://") { url = "https://" + url }
-        url = url.replacingOccurrences(of: "https://", with: "proxy-https://")
+        if url.hasPrefix("https://") { return url }
+        let looksLikeURL = url.contains(".") && !url.contains(" ") &&
+            (url.first?.isLetter == true || url.first?.isNumber == true)
+        if looksLikeURL {
+            return "https://" + url
+        } else {
+            let encoded = url.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? url
+            return "https://duckduckgo.com/?q=" + encoded
+        }
+    }
+
+    func load(_ raw: String) {
+        let url = resolveURL(raw)
+            .replacingOccurrences(of: "https://", with: "proxy-https://")
         guard let u = URL(string: url) else { errorMsg = "❌ Invalid URL"; return }
         errorMsg = nil; isLoading = true; isReaderMode = false; isDarkMode = false
         webView.load(URLRequest(url: u))
