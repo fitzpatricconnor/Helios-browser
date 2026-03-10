@@ -2,33 +2,36 @@ import Foundation
 
 class ProxyManager: ObservableObject {
     static let shared = ProxyManager()
-
-    @Published var best: ProxyEntry?             = nil
-    @Published var status: String                = "⏳ Starting…"
-    @Published var isReady: Bool                 = false
-    @Published var testedCount: Int              = 0
-    @Published var workingCount: Int             = 0
-    @Published var selectedCountry: String       = "ALL"
+    
+    @Published var best: ProxyEntry?        = nil
+    @Published var status: String           = "⏳ Starting…"
+    @Published var isReady: Bool            = false
+    @Published var allProxies: [ProxyEntry] = []
+    @Published var testedCount: Int         = 0
+    @Published var workingCount: Int        = 0
+    @Published var selectedCountry: String  = "ALL"
     @Published var customServers: [CustomServer] = []
-    @Published var proxyCountry: String          = ""
-    @Published var isCycling: Bool               = false
-
-    var activeWebProxyIndex: Int       = 0
-    var workingWebProxyIndices: [Int]  = []
-    var currentCycleIndex: Int         = 0
+    @Published var proxyCountry: String     = ""
+    @Published var isCycling: Bool          = false
+    
+    var workingProxies: [ProxyEntry] = []
+    var currentProxyIndex: Int = 0
     private var cycleTimer: Timer?
-
+    
     let silentAuth = SilentAuthDelegate()
-
-    let webProxies: [WebProxy] = [
-        WebProxy(name: "corsproxy.io",  baseURL: "https://corsproxy.io/?",               country: "🇺🇸 USA"),
-        WebProxy(name: "allorigins",    baseURL: "https://api.allorigins.win/raw?url=",   country: "🇪🇺 Europe"),
-        WebProxy(name: "codetabs",      baseURL: "https://api.codetabs.com/v1/proxy?quest=", country: "🇺🇸 USA"),
-        WebProxy(name: "corsproxy.org", baseURL: "https://corsproxy.org/?",              country: "🇪🇺 Europe"),
+    
+    // Web proxy services — these are HTTPS APIs that fetch pages for us
+    var webProxies: [WebProxy] = [
+        WebProxy(name: "corsproxy.io", baseURL: "https://corsproxy.io/?", country: "🇺🇸 USA"),
+        WebProxy(name: "allorigins", baseURL: "https://api.allorigins.win/raw?url=", country: "🇪🇺 Europe"),
+        WebProxy(name: "codetabs", baseURL: "https://api.codetabs.com/v1/proxy?quest=", country: "🇺🇸 USA"),
+        WebProxy(name: "corsproxy.org", baseURL: "https://corsproxy.org/?", country: "🇪🇺 Europe"),
     ]
-
+    var activeWebProxyIndex: Int = 0
+    private var workingWebProxyIndices: [Int] = []
+    
     init() { loadCustomServers() }
-
+    
     // MARK: - Find best web proxy
     func findBestProxy() {
         stopCycling()
@@ -39,84 +42,114 @@ class ProxyManager: ObservableObject {
             self.testedCount  = 0
             self.workingCount = 0
             self.proxyCountry = ""
+            self.workingProxies = []
+            self.workingWebProxyIndices = []
+            self.currentProxyIndex = 0
         }
+        
         if let custom = customServers.first {
             testSingleProxy(proxy: ProxyEntry(ip: custom.ip, port: custom.port), label: custom.name)
             return
         }
-        let testTarget = "https://httpbin.org/get"
+        
+        testWebProxies()
+    }
+    
+    // MARK: - Test web proxy services
+    private func testWebProxies() {
+        let testURL = "https://httpbin.org/get"
         var results: [(index: Int, time: TimeInterval)] = []
         let lock = NSLock()
         let group = DispatchGroup()
-
+        
+        DispatchQueue.main.async {
+            self.testedCount = 0
+            self.workingCount = 0
+        }
+        
         for (i, wp) in webProxies.enumerated() {
-            guard let encoded = testTarget.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-                  let url = URL(string: wp.baseURL + encoded) else { continue }
             group.enter()
+            let encoded = testURL.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? testURL
+            let proxyURLString = wp.baseURL + encoded
+            guard let url = URL(string: proxyURLString) else { group.leave(); continue }
+            
             let start = Date()
             var req = URLRequest(url: url)
             req.timeoutInterval = 10
+            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+            
             URLSession.shared.dataTask(with: req) { [weak self] (data: Data?, response: URLResponse?, error: Error?) in
                 defer { group.leave() }
                 guard let self else { return }
                 let elapsed = Date().timeIntervalSince(start)
                 DispatchQueue.main.async { self.testedCount += 1 }
-                if error != nil {
-                    if let err = error { print("❌ \(wp.name): \(err.localizedDescription)") }
+                
+                if let error = error {
+                    print("❌ \(wp.name): \(error.localizedDescription)")
                     return
                 }
-                guard let http = response as? HTTPURLResponse,
-                      http.statusCode >= 200 && http.statusCode < 400 else {
-                    print("❌ \(wp.name): bad status")
-                    return
+                if let http = response as? HTTPURLResponse,
+                   http.statusCode >= 200 && http.statusCode < 400 {
+                    print("✅ \(wp.name): \(String(format: "%.2f", elapsed))s")
+                    lock.lock(); results.append((i, elapsed)); lock.unlock()
+                    DispatchQueue.main.async { self.workingCount += 1 }
+                } else {
+                    let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    print("❌ \(wp.name): HTTP \(code)")
                 }
-                print("✅ \(wp.name) \(String(format: "%.2f", elapsed))s")
-                lock.lock(); results.append((i, elapsed)); lock.unlock()
-                DispatchQueue.main.async { self.workingCount += 1 }
             }.resume()
         }
-
-        group.notify(queue: .global(qos: .userInitiated)) { [weak self] in
+        
+        group.notify(queue: .main) { [weak self] in
             guard let self else { return }
-            let sorted = results.sorted { $0.time < $1.time }
-            let indices = sorted.map { $0.index }
-            DispatchQueue.main.async {
-                self.workingWebProxyIndices = indices
-                if let first = indices.first {
-                    self.activeWebProxyIndex = first
-                    self.proxyCountry        = self.webProxies[first].country
-                    self.status              = "🛡 \(self.webProxies[first].name) · \(indices.count)/\(self.webProxies.count) working"
-                    self.isReady             = true
-                } else {
-                    self.status  = "❌ No proxy services reachable. Tap 🔄 to retry."
-                    self.isReady = false
+            if results.isEmpty {
+                self.status  = "❌ No proxy services available. Tap 🔄 to retry."
+                self.isReady = false
+            } else {
+                let sorted = results.sorted { $0.time < $1.time }
+                guard let best = sorted.first else { return }
+                self.workingWebProxyIndices = sorted.map { $0.index }
+                self.activeWebProxyIndex = best.index
+                let wp = self.webProxies[self.activeWebProxyIndex]
+                self.isReady = true
+                self.proxyCountry = wp.country
+                let t = String(format: "%.1f", best.time)
+                self.status = "🛡 \(wp.name) · \(t)s · \(sorted.count)/\(self.webProxies.count) working"
+                // Create dummy ProxyEntry for UI compatibility
+                self.best = ProxyEntry(ip: wp.name, port: 0)
+                self.workingProxies = sorted.compactMap { r in
+                    guard r.index < self.webProxies.count else { return nil }
+                    return ProxyEntry(ip: self.webProxies[r.index].name, port: 0)
                 }
+                self.currentProxyIndex = 0
+                print("🛡 Best web proxy: \(wp.name) (\(t)s)")
             }
         }
     }
-
-    // MARK: - Build proxied URL
+    
+    // MARK: - Get the proxied URL for a given real URL
     func proxiedURL(for realURL: String) -> String {
-        let base = webProxies[activeWebProxyIndex].baseURL
+        let wp = webProxies[activeWebProxyIndex]
         let encoded = realURL.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? realURL
-        return base + encoded
+        return wp.baseURL + encoded
     }
-
-    // MARK: - Cycle through working web proxies
+    
+    // MARK: - Cycle to next working web proxy
     func cycleToNextProxy() {
-        guard !workingWebProxyIndices.isEmpty else { findBestProxy(); return }
-        currentCycleIndex += 1
-        if currentCycleIndex >= workingWebProxyIndices.count { currentCycleIndex = 0 }
-        let next = workingWebProxyIndices[currentCycleIndex]
+        guard workingWebProxyIndices.count > 1 else { findBestProxy(); return }
+        currentProxyIndex += 1
+        if currentProxyIndex >= workingWebProxyIndices.count { currentProxyIndex = 0 }
+        activeWebProxyIndex = workingWebProxyIndices[currentProxyIndex]
+        let wp = webProxies[activeWebProxyIndex]
         DispatchQueue.main.async {
-            self.activeWebProxyIndex = next
-            self.proxyCountry        = self.webProxies[next].country
-            self.isReady             = true
-            self.status              = "🔄 Trying \(self.webProxies[next].name) (\(self.currentCycleIndex + 1)/\(self.workingWebProxyIndices.count))"
-            print("🔄 Cycled to \(self.webProxies[next].name)")
+            self.best = ProxyEntry(ip: wp.name, port: 0)
+            self.isReady = true
+            self.proxyCountry = wp.country
+            self.status = "🔄 Switched to \(wp.name) (\(self.currentProxyIndex + 1)/\(self.workingWebProxyIndices.count))"
+            print("🔄 Cycled to \(wp.name)")
         }
     }
-
+    
     func startCycling(reloadAction: @escaping () -> Void) {
         guard !isCycling else { return }
         guard workingWebProxyIndices.count > 1 else { findBestProxy(); return }
@@ -132,7 +165,7 @@ class ProxyManager: ObservableObject {
             }
         }
     }
-
+    
     func stopCycling() {
         DispatchQueue.main.async {
             self.isCycling = false
@@ -140,45 +173,37 @@ class ProxyManager: ObservableObject {
             self.cycleTimer = nil
         }
     }
-
-    // MARK: - Custom Servers (uses connectionProxyDictionary)
+    
+    // MARK: - Traditional proxy test (for custom servers only)
     func testSingleProxy(proxy: ProxyEntry, label: String) {
         DispatchQueue.main.async { self.status = "⏳ Testing \(label)…"; self.isReady = false }
-        let start = Date()
         let config = URLSessionConfiguration.ephemeral
         config.connectionProxyDictionary = proxyDictionary(ip: proxy.ip, port: proxy.port)
-        config.timeoutIntervalForRequest  = 12
+        config.timeoutIntervalForRequest = 12
         config.timeoutIntervalForResource = 12
         let session = URLSession(configuration: config, delegate: silentAuth, delegateQueue: nil)
         var req = URLRequest(url: URL(string: "https://www.google.com/generate_204")!)
         req.timeoutInterval = 12
+        let start = Date()
         session.dataTask(with: req) { [weak self] (data: Data?, response: URLResponse?, error: Error?) in
             let elapsed = Date().timeIntervalSince(start)
             defer { session.invalidateAndCancel() }
             guard let self else { return }
-            let success: Bool
-            if error != nil {
-                success = false
-            } else if let http = response as? HTTPURLResponse {
-                success = http.statusCode >= 200 && http.statusCode < 400 && http.statusCode != 407 && http.statusCode != 403
-            } else {
-                success = false
-            }
             DispatchQueue.main.async {
-                if success {
-                    self.best     = proxy
-                    self.isReady  = true
-                    let t         = String(format: "%.1f", elapsed)
-                    self.status   = "🛡 \(label) · \(t)s"
-                    self.proxyCountry = ""
+                if error == nil, let http = response as? HTTPURLResponse,
+                   http.statusCode >= 200 && http.statusCode < 400 {
+                    self.best = proxy; self.isReady = true
+                    self.workingProxies = [proxy]; self.currentProxyIndex = 0
+                    let t = String(format: "%.1f", elapsed)
+                    self.status = "🛡 \(label) · \(t)s"
                 } else {
-                    self.status  = "❌ Could not connect to \(label)"
-                    self.isReady = false
+                    self.status = "❌ Could not connect to \(label)"; self.isReady = false
                 }
             }
         }.resume()
     }
-
+    
+    // MARK: - Custom Servers
     func addCustomServer(name: String, ip: String, port: Int) {
         customServers.append(CustomServer(id: UUID(), name: name, ip: ip, port: port)); saveCustomServers()
     }
@@ -199,7 +224,7 @@ class ProxyManager: ObservableObject {
     }
 }
 
-// MARK: - Web Proxy Service
+// MARK: - Web Proxy model
 struct WebProxy {
     let name: String
     let baseURL: String
