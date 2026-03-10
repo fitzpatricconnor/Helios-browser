@@ -109,8 +109,8 @@ struct ContentView: View {
                         Text("· \(proxy.proxyCountry)")
                             .font(.system(size: 9)).foregroundColor(Color.oMuted)
                     }
-                    if proxy.workingWebProxyIndices.count > 1 {
-                        Text("· \(proxy.workingWebProxyIndices.count) available")
+                    if proxy.workingProxies.count > 1 {
+                        Text("· \(proxy.workingProxies.count) available")
                             .font(.system(size: 9)).foregroundColor(Color.oMuted)
                     }
                 }
@@ -273,8 +273,8 @@ struct ContentView: View {
                         if !proxy.proxyCountry.isEmpty {
                             Text(proxy.proxyCountry).font(.system(size: 12)).foregroundColor(Color.oMuted)
                         }
-                        if !proxy.workingWebProxyIndices.isEmpty {
-                            Text("\(proxy.workingWebProxyIndices.count)/\(proxy.webProxies.count) services available")
+                        if !proxy.workingProxies.isEmpty {
+                            Text("\(proxy.workingProxies.count)/\(proxy.webProxies.count) services available")
                                 .font(.system(size: 10)).foregroundColor(Color.oMuted)
                         }
                     }
