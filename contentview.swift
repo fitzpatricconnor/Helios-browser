@@ -99,17 +99,18 @@ struct ContentView: View {
             .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 6)
             
             // Show current proxy being used
-            if proxy.isReady, let best = proxy.best {
+            if proxy.isReady {
+                let activeName = proxy.webProxies[proxy.activeWebProxyIndex].name
                 HStack(spacing: 4) {
                     Image(systemName: "server.rack").font(.system(size: 8)).foregroundColor(Color.oAccent)
-                    Text("via \(best.label)")
+                    Text("via \(activeName)")
                         .font(.system(size: 9, design: .monospaced)).foregroundColor(Color.oMuted)
                     if !proxy.proxyCountry.isEmpty {
                         Text("· \(proxy.proxyCountry)")
                             .font(.system(size: 9)).foregroundColor(Color.oMuted)
                     }
-                    if proxy.workingProxies.count > 1 {
-                        Text("· \(proxy.workingProxies.count) available")
+                    if proxy.workingWebProxyIndices.count > 1 {
+                        Text("· \(proxy.workingWebProxyIndices.count) available")
                             .font(.system(size: 9)).foregroundColor(Color.oMuted)
                     }
                 }
@@ -265,14 +266,15 @@ struct ContentView: View {
                     Text(proxy.isReady ? "Connected" : "Searching…")
                         .font(.system(size: 13, weight: .semibold)).foregroundColor(Color.oText)
                 }
-                if let best = proxy.best {
+                if proxy.isReady {
+                    let activeName = proxy.webProxies[proxy.activeWebProxyIndex].name
                     VStack(spacing: 4) {
-                        Text(best.label).font(.system(size: 12, design: .monospaced)).foregroundColor(Color.oAccent)
+                        Text(activeName).font(.system(size: 12, design: .monospaced)).foregroundColor(Color.oAccent)
                         if !proxy.proxyCountry.isEmpty {
                             Text(proxy.proxyCountry).font(.system(size: 12)).foregroundColor(Color.oMuted)
                         }
-                        if proxy.workingProxies.count > 1 {
-                            Text("\(proxy.workingProxies.count) proxies available")
+                        if !proxy.workingWebProxyIndices.isEmpty {
+                            Text("\(proxy.workingWebProxyIndices.count)/\(proxy.webProxies.count) services available")
                                 .font(.system(size: 10)).foregroundColor(Color.oMuted)
                         }
                     }
@@ -291,33 +293,23 @@ struct ContentView: View {
                     }
                 }
                 Divider().background(Color.oBorder)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Country Filter").font(.system(size: 12, weight: .semibold)).foregroundColor(Color.oMuted)
-                    Picker("Country", selection: $proxy.selectedCountry) {
-                        ForEach(allCountries) { c in Text(c.name).tag(c.id) }
-                    }
-                    .pickerStyle(.menu).accentColor(Color.oAccent)
-                    .padding(8).background(Color.oBG).clipShape(RoundedRectangle(cornerRadius: 8))
-                    Button {
-                        showProxySheet = false
-                        proxy.stopCycling()
-                        ProxyManager.shared.findBestProxy()
-                    } label: {
-                        let name = allCountries.first { $0.id == proxy.selectedCountry }?.name ?? "All"
-                        Label("Find Proxy for \(name)", systemImage: "arrow.clockwise")
-                            .font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
-                            .frame(maxWidth: .infinity).padding(.vertical, 10)
-                            .background(Color.oAccent).clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
+                Button {
+                    showProxySheet = false
+                    proxy.stopCycling()
+                    ProxyManager.shared.findBestProxy()
+                } label: {
+                    Label("Refresh Proxy Services", systemImage: "arrow.clockwise")
+                        .font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                        .frame(maxWidth: .infinity).padding(.vertical, 10)
+                        .background(Color.oAccent).clipShape(RoundedRectangle(cornerRadius: 10))
                 }
                 Divider().background(Color.oBorder)
                 CustomServerSection(proxy: proxy)
                 Divider().background(Color.oBorder)
                 if proxy.testedCount > 0 {
                     HStack(spacing: 20) {
-                        StatBadge(value: "\(proxy.testedCount)",      label: "Tested",  color: Color.oAccent)
-                        StatBadge(value: "\(proxy.workingCount)",     label: "Working", color: Color.oGreen)
-                        StatBadge(value: "\(proxy.allProxies.count)", label: "Found",   color: Color.oOrange)
+                        StatBadge(value: "\(proxy.testedCount)",  label: "Tested",  color: Color.oAccent)
+                        StatBadge(value: "\(proxy.workingCount)", label: "Working", color: Color.oGreen)
                     }
                 }
                 Button("Done") { showProxySheet = false }
