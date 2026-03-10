@@ -29,7 +29,7 @@ struct ContentView: View {
                         .opacity(showStart || store.errorMsg != nil ? 0 : 1)
                     if let err = store.errorMsg { errorScreen(err) }
                     if showStart {
-                        if proxy.isReady { HomeScreen(onNavigate: { navigate(with: $0) }) }
+                        if proxy.isReady || proxy.isDirectMode { HomeScreen(onNavigate: { navigate(with: $0) }) }
                         else { StartupScreen(proxy: proxy) }
                     }
                 }
@@ -74,14 +74,20 @@ struct ContentView: View {
                 }
                 Button { showProxySheet = true } label: {
                     HStack(spacing: 4) {
-                        if proxy.isCycling {
+                        if proxy.isDirectMode {
+                            Image(systemName: "antenna.radiowaves.left.and.right")
+                                .font(.system(size: 9)).foregroundColor(Color.oOrange)
+                        } else if proxy.isCycling {
                             ProgressView().progressViewStyle(CircularProgressViewStyle(tint: Color.oOrange)).scaleEffect(0.5)
                         } else if proxy.isReady {
                             Circle().fill(Color.oGreen).frame(width: 6, height: 6)
                         } else {
                             ProgressView().progressViewStyle(CircularProgressViewStyle(tint: Color.oAccent)).scaleEffect(0.5)
                         }
-                        if proxy.isReady && !proxy.proxyCountry.isEmpty {
+                        if proxy.isDirectMode {
+                            Text("Direct")
+                                .font(.system(size: 10, weight: .medium)).foregroundColor(Color.oOrange)
+                        } else if proxy.isReady && !proxy.proxyCountry.isEmpty {
                             Text(proxy.proxyCountry)
                                 .font(.system(size: 10, weight: .medium)).foregroundColor(Color.oMuted)
                         } else if proxy.isCycling {
@@ -261,57 +267,82 @@ struct ContentView: View {
         SheetOverlay { showProxySheet = false } content: {
             VStack(spacing: 14) {
                 Text("Proxy Settings").font(.system(size: 17, weight: .bold)).foregroundColor(Color.oText)
-                HStack(spacing: 6) {
-                    Circle().fill(proxy.isReady ? Color.oGreen : Color.oOrange).frame(width: 8, height: 8)
-                    Text(proxy.isReady ? "Connected" : "Searching…")
-                        .font(.system(size: 13, weight: .semibold)).foregroundColor(Color.oText)
-                }
-                if proxy.isReady {
-                    let activeName = proxy.webProxies[proxy.activeWebProxyIndex].name
-                    VStack(spacing: 4) {
-                        Text(activeName).font(.system(size: 12, design: .monospaced)).foregroundColor(Color.oAccent)
-                        if !proxy.proxyCountry.isEmpty {
-                            Text(proxy.proxyCountry).font(.system(size: 12)).foregroundColor(Color.oMuted)
-                        }
-                        if !proxy.workingProxies.isEmpty {
-                            Text("\(proxy.workingProxies.count)/\(proxy.webProxies.count) services available")
-                                .font(.system(size: 10)).foregroundColor(Color.oMuted)
-                        }
+                
+                // Direct Mode Toggle
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Direct Mode").font(.system(size: 14, weight: .semibold)).foregroundColor(Color.oText)
+                        Text("Browse without a proxy")
+                            .font(.system(size: 11)).foregroundColor(Color.oMuted)
                     }
-                    .padding(8).background(Color.oBG).clipShape(RoundedRectangle(cornerRadius: 8))
+                    Spacer()
+                    Toggle("", isOn: Binding(
+                        get: { proxy.isDirectMode },
+                        set: { newValue in
+                            if newValue != proxy.isDirectMode { proxy.toggleDirectMode() }
+                        }
+                    ))
+                    .labelsHidden()
+                    .tint(Color.oOrange)
                 }
-                if proxy.isCycling {
+                .padding(10).background(Color.oBG).clipShape(RoundedRectangle(cornerRadius: 10))
+                
+                Divider().background(Color.oBorder)
+                
+                if !proxy.isDirectMode {
                     HStack(spacing: 6) {
-                        ProgressView().progressViewStyle(CircularProgressViewStyle(tint: Color.oOrange)).scaleEffect(0.7)
-                        Text("Auto-cycling proxies…")
-                            .font(.system(size: 11)).foregroundColor(Color.oOrange)
+                        Circle().fill(proxy.isReady ? Color.oGreen : Color.oOrange).frame(width: 8, height: 8)
+                        Text(proxy.isReady ? "Connected" : "Searching…")
+                            .font(.system(size: 13, weight: .semibold)).foregroundColor(Color.oText)
                     }
+                    if proxy.isReady {
+                        let activeName = proxy.webProxies[proxy.activeWebProxyIndex].name
+                        VStack(spacing: 4) {
+                            Text(activeName).font(.system(size: 12, design: .monospaced)).foregroundColor(Color.oAccent)
+                            if !proxy.proxyCountry.isEmpty {
+                                Text(proxy.proxyCountry).font(.system(size: 12)).foregroundColor(Color.oMuted)
+                            }
+                            if !proxy.workingProxies.isEmpty {
+                                Text("\(proxy.workingProxies.count)/\(proxy.webProxies.count) services available")
+                                    .font(.system(size: 10)).foregroundColor(Color.oMuted)
+                            }
+                        }
+                        .padding(8).background(Color.oBG).clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    if proxy.isCycling {
+                        HStack(spacing: 6) {
+                            ProgressView().progressViewStyle(CircularProgressViewStyle(tint: Color.oOrange)).scaleEffect(0.7)
+                            Text("Auto-cycling proxies…")
+                                .font(.system(size: 11)).foregroundColor(Color.oOrange)
+                        }
+                        Button {
+                            proxy.stopCycling()
+                        } label: {
+                            Text("Stop Cycling").font(.system(size: 12, weight: .semibold)).foregroundColor(Color.oRed)
+                        }
+                    }
+                    Divider().background(Color.oBorder)
                     Button {
+                        showProxySheet = false
                         proxy.stopCycling()
+                        ProxyManager.shared.findBestProxy()
                     } label: {
-                        Text("Stop Cycling").font(.system(size: 12, weight: .semibold)).foregroundColor(Color.oRed)
+                        Label("Refresh Proxy Services", systemImage: "arrow.clockwise")
+                            .font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                            .frame(maxWidth: .infinity).padding(.vertical, 10)
+                            .background(Color.oAccent).clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    Divider().background(Color.oBorder)
+                    CustomServerSection(proxy: proxy)
+                    Divider().background(Color.oBorder)
+                    if proxy.testedCount > 0 {
+                        HStack(spacing: 20) {
+                            StatBadge(value: "\(proxy.testedCount)",  label: "Tested",  color: Color.oAccent)
+                            StatBadge(value: "\(proxy.workingCount)", label: "Working", color: Color.oGreen)
+                        }
                     }
                 }
-                Divider().background(Color.oBorder)
-                Button {
-                    showProxySheet = false
-                    proxy.stopCycling()
-                    ProxyManager.shared.findBestProxy()
-                } label: {
-                    Label("Refresh Proxy Services", systemImage: "arrow.clockwise")
-                        .font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
-                        .frame(maxWidth: .infinity).padding(.vertical, 10)
-                        .background(Color.oAccent).clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-                Divider().background(Color.oBorder)
-                CustomServerSection(proxy: proxy)
-                Divider().background(Color.oBorder)
-                if proxy.testedCount > 0 {
-                    HStack(spacing: 20) {
-                        StatBadge(value: "\(proxy.testedCount)",  label: "Tested",  color: Color.oAccent)
-                        StatBadge(value: "\(proxy.workingCount)", label: "Working", color: Color.oGreen)
-                    }
-                }
+                
                 Button("Done") { showProxySheet = false }
                     .font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
                     .padding(.horizontal, 30).padding(.vertical, 8)
@@ -481,7 +512,7 @@ struct ContentView: View {
     func navigate(with url: String? = nil) {
         let raw = (url ?? inputText).trimmingCharacters(in: .whitespaces)
         guard !raw.isEmpty else { return }
-        guard proxy.isReady else {
+        guard proxy.isReady || proxy.isDirectMode else {
             store.errorMsg = "⏳ Still finding a proxy…\nPlease wait then try again."
             return
         }

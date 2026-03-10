@@ -13,6 +13,7 @@ class ProxyManager: ObservableObject {
     @Published var customServers: [CustomServer] = []
     @Published var proxyCountry: String     = ""
     @Published var isCycling: Bool          = false
+    @Published var isDirectMode: Bool       = false
     
     var workingProxies: [ProxyEntry] = []
     var currentProxyIndex: Int = 0
@@ -30,10 +31,18 @@ class ProxyManager: ObservableObject {
     var activeWebProxyIndex: Int = 0
     private var workingWebProxyIndices: [Int] = []
     
-    init() { loadCustomServers() }
+    init() {
+        isDirectMode = UserDefaults.standard.bool(forKey: "orion_direct_mode")
+        loadCustomServers()
+        if isDirectMode {
+            status  = "📡 Direct — no proxy"
+            isReady = true
+        }
+    }
     
     // MARK: - Find best web proxy
     func findBestProxy() {
+        guard !isDirectMode else { return }
         stopCycling()
         DispatchQueue.main.async {
             self.status       = "⏳ Testing proxy services…"
@@ -201,6 +210,25 @@ class ProxyManager: ObservableObject {
                 }
             }
         }.resume()
+    }
+    
+    // MARK: - Direct Mode
+    func toggleDirectMode() {
+        isDirectMode.toggle()
+        UserDefaults.standard.set(isDirectMode, forKey: "orion_direct_mode")
+        if isDirectMode {
+            stopCycling()
+            DispatchQueue.main.async {
+                self.status = "📡 Direct — no proxy"
+                self.isReady = true
+            }
+        } else {
+            DispatchQueue.main.async {
+                self.status = "⏳ Starting…"
+                self.isReady = false
+            }
+            findBestProxy()
+        }
     }
     
     // MARK: - Custom Servers

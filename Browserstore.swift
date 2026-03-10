@@ -267,7 +267,9 @@ class BrowserStore: ObservableObject {
         var url = raw.trimmingCharacters(in: .whitespaces)
         if url.hasPrefix("http://") { url = "https://" + url.dropFirst(7) }
         if !url.hasPrefix("https://") { url = "https://" + url }
-        url = url.replacingOccurrences(of: "https://", with: "proxy-https://")
+        if !ProxyManager.shared.isDirectMode {
+            url = url.replacingOccurrences(of: "https://", with: "proxy-https://")
+        }
         guard let u = URL(string: url) else { errorMsg = "❌ Invalid URL"; return }
         errorMsg = nil; isLoading = true; isReaderMode = false; isDarkMode = false
         webView.load(URLRequest(url: u))
