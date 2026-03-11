@@ -14,6 +14,12 @@ extension Color {
 }
 
 // MARK: - Models
+struct WebProxy {
+    let name: String
+    let baseURL: String
+    let country: String
+}
+
 struct ProxyEntry: Codable, Identifiable {
     var id: String { label }
     let ip: String
