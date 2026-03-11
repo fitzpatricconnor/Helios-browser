@@ -117,6 +117,9 @@ struct ContentView: View {
                             Text("· \(proxy.proxyCountry)")
                                 .font(.system(size: 9)).foregroundColor(Color.oMuted)
                         }
+                    } else {
+                        Text("via \(proxy.activeWebProxyName)")
+                            .font(.system(size: 9, design: .monospaced)).foregroundColor(Color.oMuted)
                     }
                 }
                 .padding(.horizontal, 14).padding(.bottom, 4)
@@ -254,12 +257,8 @@ struct ContentView: View {
                 ActionButton(label: "Retry",     icon: "arrow.clockwise",                  color: Color.oAccent)  { store.reload() }
                 ActionButton(label: "New Proxy", icon: "antenna.radiowaves.left.and.right", color: Color.oOrange) {
                     proxy.stopCycling()
-                    if proxy.customServers.isEmpty {
-                        proxy.enableDirectMode()
-                        store.reload()
-                    } else {
-                        ProxyManager.shared.findBestProxy()
-                    }
+                    proxy.findBestProxy()
+                    store.reload()
                 }
             }
             Spacer()
@@ -283,8 +282,7 @@ struct ContentView: View {
                         get: { proxy.isDirectMode },
                         set: { newValue in
                             if newValue { proxy.enableDirectMode() }
-                            else if !proxy.customServers.isEmpty { proxy.findBestProxy() }
-                            else { proxy.enableDirectMode() }
+                            else { proxy.findBestProxy() }
                         }
                     )).labelsHidden()
                 }
@@ -303,6 +301,10 @@ struct ContentView: View {
                         }
                     }
                     .padding(8).background(Color.oBG).clipShape(RoundedRectangle(cornerRadius: 8))
+                } else if !proxy.isDirectMode {
+                    Text("via \(proxy.activeWebProxyName)")
+                        .font(.system(size: 12, design: .monospaced)).foregroundColor(Color.oAccent)
+                        .padding(8).background(Color.oBG).clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 if proxy.isCycling {
                     HStack(spacing: 6) {

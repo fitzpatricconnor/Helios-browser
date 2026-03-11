@@ -3,9 +3,9 @@ import Foundation
 class ProxyManager: ObservableObject {
     static let shared = ProxyManager()
     
-    @Published var status: String           = "📡 Direct"
+    @Published var status: String           = "🌐 Web Proxy"
     @Published var isReady: Bool            = true
-    @Published var isDirectMode: Bool       = true
+    @Published var isDirectMode: Bool       = false
     @Published var best: ProxyEntry?        = nil
     @Published var testedCount: Int         = 0
     @Published var workingCount: Int        = 0
@@ -19,13 +19,30 @@ class ProxyManager: ObservableObject {
     
     let silentAuth = SilentAuthDelegate()
     
+    // MARK: - Web Proxy Services
+    let webProxies: [WebProxy] = [
+        WebProxy(name: "corsproxy.io",  baseURL: "https://corsproxy.io/?",                  country: "🌐"),
+        WebProxy(name: "allorigins",    baseURL: "https://api.allorigins.win/raw?url=",       country: "🌐"),
+        WebProxy(name: "codetabs",      baseURL: "https://api.codetabs.com/v1/proxy?quest=",  country: "🌐"),
+        WebProxy(name: "corsproxy.org", baseURL: "https://corsproxy.org/?",                  country: "🌐"),
+    ]
+    @Published var activeWebProxyIndex: Int = 0
+    
+    func proxiedURL(for urlString: String) -> String {
+        let encoded = urlString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? urlString
+        return webProxies[activeWebProxyIndex].baseURL + encoded
+    }
+    
+    var activeWebProxyName: String {
+        webProxies.indices.contains(activeWebProxyIndex) ? webProxies[activeWebProxyIndex].name : "web proxy"
+    }
+    
     init() {
         loadCustomServers()
-        isDirectMode = UserDefaults.standard.object(forKey: "orion_direct_mode") as? Bool ?? true
-        if isDirectMode {
-            status = "📡 Direct"
-            isReady = true
-        }
+        // Always default to web proxy mode — never direct
+        isDirectMode = false
+        status = "🌐 Web Proxy"
+        isReady = true
     }
     
     // MARK: - Direct Mode
@@ -44,7 +61,14 @@ class ProxyManager: ObservableObject {
     // MARK: - Find best proxy (custom servers only)
     func findBestProxy() {
         if customServers.isEmpty {
-            enableDirectMode()
+            // No custom servers — use web proxy mode instead of direct
+            DispatchQueue.main.async {
+                self.isDirectMode = false
+                self.isReady = true
+                self.best = nil
+                self.status = "🌐 Web Proxy"
+                UserDefaults.standard.set(false, forKey: "orion_direct_mode")
+            }
             return
         }
         stopCycling()
@@ -172,7 +196,7 @@ class ProxyManager: ObservableObject {
     }
     func removeCustomServer(_ s: CustomServer) {
         customServers.removeAll { $0.id == s.id }; saveCustomServers()
-        if customServers.isEmpty { enableDirectMode() } else { findBestProxy() }
+        findBestProxy()
     }
     func useCustomServer(_ s: CustomServer) {
         testSingleProxy(proxy: ProxyEntry(ip: s.ip, port: s.port), label: s.name)
