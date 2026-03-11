@@ -42,7 +42,11 @@ struct ContentView: View {
             if showTabs       { tabSheet }
         }
         .preferredColorScheme(.dark)
-        .onAppear { ProxyManager.shared.findBestProxy() }
+        .onAppear {
+            if !ProxyManager.shared.isDirectMode {
+                ProxyManager.shared.findBestProxy()
+            }
+        }
         .sheet(isPresented: $showShare) {
             if let u = shareURL { ShareSheet(url: u) }
         }
@@ -98,20 +102,21 @@ struct ContentView: View {
             }
             .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 6)
             
-            // Show current proxy being used
+            // Show current connection mode
             if proxy.isReady {
-                let activeName = proxy.webProxies[proxy.activeWebProxyIndex].name
                 HStack(spacing: 4) {
-                    Image(systemName: "server.rack").font(.system(size: 8)).foregroundColor(Color.oAccent)
-                    Text("via \(activeName)")
-                        .font(.system(size: 9, design: .monospaced)).foregroundColor(Color.oMuted)
-                    if !proxy.proxyCountry.isEmpty {
-                        Text("· \(proxy.proxyCountry)")
-                            .font(.system(size: 9)).foregroundColor(Color.oMuted)
-                    }
-                    if proxy.workingProxies.count > 1 {
-                        Text("· \(proxy.workingProxies.count) available")
-                            .font(.system(size: 9)).foregroundColor(Color.oMuted)
+                    Image(systemName: proxy.isDirectMode ? "antenna.radiowaves.left.and.right" : "server.rack")
+                        .font(.system(size: 8)).foregroundColor(Color.oAccent)
+                    if proxy.isDirectMode {
+                        Text("📡 Direct Connection")
+                            .font(.system(size: 9, design: .monospaced)).foregroundColor(Color.oMuted)
+                    } else if let p = proxy.best {
+                        Text("via \(p.label)")
+                            .font(.system(size: 9, design: .monospaced)).foregroundColor(Color.oMuted)
+                        if !proxy.proxyCountry.isEmpty {
+                            Text("· \(proxy.proxyCountry)")
+                                .font(.system(size: 9)).foregroundColor(Color.oMuted)
+                        }
                     }
                 }
                 .padding(.horizontal, 14).padding(.bottom, 4)
@@ -249,7 +254,12 @@ struct ContentView: View {
                 ActionButton(label: "Retry",     icon: "arrow.clockwise",                  color: Color.oAccent)  { store.reload() }
                 ActionButton(label: "New Proxy", icon: "antenna.radiowaves.left.and.right", color: Color.oOrange) {
                     proxy.stopCycling()
-                    ProxyManager.shared.findBestProxy()
+                    if proxy.customServers.isEmpty {
+                        proxy.enableDirectMode()
+                        store.reload()
+                    } else {
+                        ProxyManager.shared.findBestProxy()
+                    }
                 }
             }
             Spacer()
@@ -260,22 +270,36 @@ struct ContentView: View {
     var proxySheet: some View {
         SheetOverlay { showProxySheet = false } content: {
             VStack(spacing: 14) {
-                Text("Proxy Settings").font(.system(size: 17, weight: .bold)).foregroundColor(Color.oText)
+                Text("Connection Settings").font(.system(size: 17, weight: .bold)).foregroundColor(Color.oText)
+                
+                // Direct mode toggle
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Direct Mode").font(.system(size: 14, weight: .semibold)).foregroundColor(Color.oText)
+                        Text("Browse directly without a proxy").font(.system(size: 11)).foregroundColor(Color.oMuted)
+                    }
+                    Spacer()
+                    Toggle("", isOn: Binding(
+                        get: { proxy.isDirectMode },
+                        set: { newValue in
+                            if newValue { proxy.enableDirectMode() }
+                            else if !proxy.customServers.isEmpty { proxy.findBestProxy() }
+                            else { proxy.enableDirectMode() }
+                        }
+                    )).labelsHidden()
+                }
+                .padding(12).background(Color.oBG).clipShape(RoundedRectangle(cornerRadius: 10))
+                
                 HStack(spacing: 6) {
                     Circle().fill(proxy.isReady ? Color.oGreen : Color.oOrange).frame(width: 8, height: 8)
-                    Text(proxy.isReady ? "Connected" : "Searching…")
+                    Text(proxy.isReady ? (proxy.isDirectMode ? "Direct" : "Connected") : "Searching…")
                         .font(.system(size: 13, weight: .semibold)).foregroundColor(Color.oText)
                 }
-                if proxy.isReady {
-                    let activeName = proxy.webProxies[proxy.activeWebProxyIndex].name
+                if !proxy.isDirectMode, let p = proxy.best {
                     VStack(spacing: 4) {
-                        Text(activeName).font(.system(size: 12, design: .monospaced)).foregroundColor(Color.oAccent)
+                        Text(p.label).font(.system(size: 12, design: .monospaced)).foregroundColor(Color.oAccent)
                         if !proxy.proxyCountry.isEmpty {
                             Text(proxy.proxyCountry).font(.system(size: 12)).foregroundColor(Color.oMuted)
-                        }
-                        if !proxy.workingProxies.isEmpty {
-                            Text("\(proxy.workingProxies.count)/\(proxy.webProxies.count) services available")
-                                .font(.system(size: 10)).foregroundColor(Color.oMuted)
                         }
                     }
                     .padding(8).background(Color.oBG).clipShape(RoundedRectangle(cornerRadius: 8))
@@ -291,17 +315,6 @@ struct ContentView: View {
                     } label: {
                         Text("Stop Cycling").font(.system(size: 12, weight: .semibold)).foregroundColor(Color.oRed)
                     }
-                }
-                Divider().background(Color.oBorder)
-                Button {
-                    showProxySheet = false
-                    proxy.stopCycling()
-                    ProxyManager.shared.findBestProxy()
-                } label: {
-                    Label("Refresh Proxy Services", systemImage: "arrow.clockwise")
-                        .font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
-                        .frame(maxWidth: .infinity).padding(.vertical, 10)
-                        .background(Color.oAccent).clipShape(RoundedRectangle(cornerRadius: 10))
                 }
                 Divider().background(Color.oBorder)
                 CustomServerSection(proxy: proxy)
