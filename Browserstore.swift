@@ -161,7 +161,10 @@ class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
             var headers: [String: String] = ["Access-Control-Allow-Origin": "*"]
             if let http = response as? HTTPURLResponse {
                 statusCode = http.statusCode
-                http.allHeaderFields.forEach { headers[String(describing: $0.key)] = String(describing: $0.value) }
+                for (key, value) in http.allHeaderFields {
+                    guard let headerKey = key as? String else { continue }
+                    headers[headerKey] = (value as? String) ?? "\(value)"
+                }
             }
             if headers["Content-Type"] == nil {
                 headers["Content-Type"] = "text/html; charset=utf-8"
@@ -331,7 +334,7 @@ class NavDelegate: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
     func webView(_ wv: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         let pm = ProxyManager.shared
-        if !pm.isDirectMode, pm.best == nil,
+        if pm.isUsingWebProxyMode,
            let url = action.request.url,
            let scheme = url.scheme?.lowercased(),
            (scheme == "http" || scheme == "https") {

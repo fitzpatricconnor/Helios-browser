@@ -63,6 +63,10 @@ class ProxyManager: ObservableObject {
         webProxies.isEmpty ? "web proxy" : activeWebProxy.name
     }
     
+    var isUsingWebProxyMode: Bool {
+        !isDirectMode && best == nil
+    }
+    
     init() {
         loadCustomServers()
         activeWebProxyIndex = clampedWebProxyIndex(UserDefaults.standard.integer(forKey: activeWebProxyIndexKey))
