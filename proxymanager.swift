@@ -16,6 +16,12 @@ class ProxyManager: ObservableObject {
     var workingProxies: [ProxyEntry] = []
     var currentProxyIndex: Int = 0
     private var cycleTimer: Timer?
+    private var webProxyRetryAttempt: Int = 0
+    private var pendingWebProxyRetry: DispatchWorkItem?
+    private let activeWebProxyIndexKey = "orion_active_web_proxy_index"
+    private let maxWebProxyRetryAttempts = 3
+    private let webProxyRetryBaseDelaySeconds = 0.8
+    private let maxWebProxyRetryDelaySeconds = 3.0
     
     let silentAuth = SilentAuthDelegate()
     
@@ -28,26 +34,43 @@ class ProxyManager: ObservableObject {
     ]
     @Published var activeWebProxyIndex: Int = 0
     
+    private func clampedWebProxyIndex(_ index: Int) -> Int {
+        guard !webProxies.isEmpty else { return 0 }
+        if index < 0 { return 0 }
+        if index >= webProxies.count { return webProxies.count - 1 }
+        return index
+    }
+    
+    private func persistActiveWebProxyIndex() {
+        UserDefaults.standard.set(activeWebProxyIndex, forKey: activeWebProxyIndexKey)
+    }
+    
+    var activeWebProxy: WebProxy {
+        webProxies[clampedWebProxyIndex(activeWebProxyIndex)]
+    }
+    
     func proxiedURL(for urlString: String) -> String {
         let encoded = urlString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? urlString
-        return webProxies[activeWebProxyIndex].baseURL + encoded
+        return activeWebProxy.baseURL + encoded
     }
     
     var activeWebProxyName: String {
-        webProxies.indices.contains(activeWebProxyIndex) ? webProxies[activeWebProxyIndex].name : "web proxy"
+        webProxies.isEmpty ? "web proxy" : activeWebProxy.name
     }
     
     init() {
         loadCustomServers()
+        activeWebProxyIndex = clampedWebProxyIndex(UserDefaults.standard.integer(forKey: activeWebProxyIndexKey))
         // Always default to web proxy mode — never direct
         isDirectMode = false
-        status = "🌐 Web Proxy"
+        status = "🌐 \(activeWebProxyName)"
         isReady = true
     }
     
     // MARK: - Direct Mode
     func enableDirectMode() {
         stopCycling()
+        resetWebProxyRetries()
         DispatchQueue.main.async {
             self.isDirectMode = true
             self.isReady = true
@@ -62,15 +85,17 @@ class ProxyManager: ObservableObject {
     func findBestProxy() {
         if customServers.isEmpty {
             // No custom servers — use web proxy mode instead of direct
+            resetWebProxyRetries()
             DispatchQueue.main.async {
                 self.isDirectMode = false
                 self.isReady = true
                 self.best = nil
-                self.status = "🌐 Web Proxy"
+                self.status = "🌐 \(self.activeWebProxyName)"
                 UserDefaults.standard.set(false, forKey: "orion_direct_mode")
             }
             return
         }
+        resetWebProxyRetries()
         stopCycling()
         DispatchQueue.main.async {
             self.isDirectMode = false
@@ -127,6 +152,96 @@ class ProxyManager: ObservableObject {
         }
     }
     
+    private func resetWebProxyRetries() {
+        webProxyRetryAttempt = 0
+        pendingWebProxyRetry?.cancel()
+        pendingWebProxyRetry = nil
+    }
+    
+    private var isWebProxyRetryAllowed: Bool {
+        !isDirectMode && best == nil && webProxies.count > 1
+    }
+    
+    @discardableResult
+    func switchToNextWebProxy(manual: Bool, completion: (() -> Void)? = nil) -> Bool {
+        guard webProxies.count > 1 else {
+            DispatchQueue.main.async {
+                self.isReady = false
+                self.status = "❌ No alternate web proxy available"
+            }
+            return false
+        }
+        let applySwitch = {
+            self.stopCycling()
+            self.isDirectMode = false
+            self.best = nil
+            self.isReady = true
+            self.activeWebProxyIndex = (self.activeWebProxyIndex + 1) % self.webProxies.count
+            self.persistActiveWebProxyIndex()
+            self.status = manual ? "🔀 Switched to \(self.activeWebProxyName)" : "🔄 Trying \(self.activeWebProxyName)…"
+            UserDefaults.standard.set(false, forKey: "orion_direct_mode")
+            completion?()
+        }
+        if Thread.isMainThread {
+            applySwitch()
+        } else {
+            DispatchQueue.main.async(execute: applySwitch)
+        }
+        return true
+    }
+    
+    @discardableResult
+    func scheduleWebProxyRetry(reloadAction: @escaping () -> Void, onScheduled: ((String) -> Void)? = nil) -> Bool {
+        guard isWebProxyRetryAllowed else { return false }
+        // Retry at most one pass across alternates, excluding the current proxy.
+        let maxAttempts = min(maxWebProxyRetryAttempts, webProxies.count - 1)
+        guard maxAttempts > 0 else { return false }
+        let nextAttempt = webProxyRetryAttempt + 1
+        guard nextAttempt <= maxAttempts else {
+            resetWebProxyRetries()
+            DispatchQueue.main.async {
+                self.status = "❌ \(self.activeWebProxyName) failed"
+            }
+            return false
+        }
+        
+        pendingWebProxyRetry?.cancel()
+        webProxyRetryAttempt = nextAttempt
+        let backoffMultiplier = pow(2.0, Double(nextAttempt - 1))
+        let delay = min(backoffMultiplier * webProxyRetryBaseDelaySeconds, maxWebProxyRetryDelaySeconds)
+        
+        DispatchQueue.main.async {
+            self.isReady = false
+            self.status = "🔄 \(self.activeWebProxyName) failed — retrying (\(nextAttempt)/\(maxAttempts))"
+            onScheduled?("🔄 \(self.activeWebProxyName) failed — switching web proxy…")
+        }
+        
+        let retryWork = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let switched = self.switchToNextWebProxy(manual: false) {
+                reloadAction()
+            }
+            if !switched {
+                DispatchQueue.main.async {
+                    self.status = "❌ No alternate web proxy available"
+                    self.isReady = false
+                }
+            }
+        }
+        pendingWebProxyRetry = retryWork
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: retryWork)
+        return true
+    }
+    
+    func markWebProxySuccess() {
+        guard !isDirectMode, best == nil else { return }
+        resetWebProxyRetries()
+        DispatchQueue.main.async {
+            self.isReady = true
+            self.status = "🌐 \(self.activeWebProxyName)"
+        }
+    }
+    
     func lookupCountry(ip: String) {
         // ip-api.com free tier requires HTTP; HTTPS needs a paid key.
         // This lookup is purely cosmetic (country flag display) and the IP
@@ -158,6 +273,7 @@ class ProxyManager: ObservableObject {
     
     // MARK: - Test single proxy (for custom servers)
     func testSingleProxy(proxy: ProxyEntry, label: String) {
+        resetWebProxyRetries()
         DispatchQueue.main.async { self.status = "⏳ Testing \(label)…"; self.isReady = false }
         let config = URLSessionConfiguration.ephemeral
         config.connectionProxyDictionary = proxyDictionary(ip: proxy.ip, port: proxy.port)

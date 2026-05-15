@@ -256,9 +256,15 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 ActionButton(label: "Retry",     icon: "arrow.clockwise",                  color: Color.oAccent)  { store.reload() }
                 ActionButton(label: "New Proxy", icon: "antenna.radiowaves.left.and.right", color: Color.oOrange) {
-                    proxy.stopCycling()
-                    proxy.findBestProxy()
-                    store.reload()
+                    if proxy.customServers.isEmpty {
+                        _ = proxy.switchToNextWebProxy(manual: true) {
+                            store.reload()
+                        }
+                    } else {
+                        proxy.stopCycling()
+                        proxy.findBestProxy()
+                        store.reload()
+                    }
                 }
             }
             Spacer()
