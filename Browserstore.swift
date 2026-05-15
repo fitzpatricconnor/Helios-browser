@@ -361,8 +361,9 @@ class NavDelegate: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         } else if pm.scheduleWebProxyRetry(reloadAction: { [weak self] in
             guard let self, let store = self.store else { return }
             store.reload()
+        }, onScheduled: { [weak self] message in
+            self?.store?.errorMsg = message
         }) {
-            store?.errorMsg = "🔄 \(proxyName) failed — switching web proxy…"
         } else {
             store?.errorMsg = "❌ \(proxyName) failed (error \(c))\nTap New Proxy to try again."
         }

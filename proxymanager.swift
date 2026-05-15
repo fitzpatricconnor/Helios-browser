@@ -158,7 +158,7 @@ class ProxyManager: ObservableObject {
         pendingWebProxyRetry = nil
     }
     
-    private var canRetryWebProxy: Bool {
+    private var isWebProxyRetryAllowed: Bool {
         !isDirectMode && best == nil && webProxies.count > 1
     }
     
@@ -191,9 +191,9 @@ class ProxyManager: ObservableObject {
     }
     
     @discardableResult
-    func scheduleWebProxyRetry(reloadAction: @escaping () -> Void) -> Bool {
-        guard canRetryWebProxy else { return false }
-        // Retry at most one pass across alternates, capped by maxWebProxyRetryAttempts.
+    func scheduleWebProxyRetry(reloadAction: @escaping () -> Void, onScheduled: ((String) -> Void)? = nil) -> Bool {
+        guard isWebProxyRetryAllowed else { return false }
+        // Retry at most one pass across alternates, excluding the current proxy.
         let maxAttempts = min(maxWebProxyRetryAttempts, webProxies.count - 1)
         let nextAttempt = webProxyRetryAttempt + 1
         guard nextAttempt <= maxAttempts else {
@@ -206,12 +206,14 @@ class ProxyManager: ObservableObject {
         
         pendingWebProxyRetry?.cancel()
         webProxyRetryAttempt = nextAttempt
+        // 2^(nextAttempt-1) exponential backoff multiplier.
         let backoffMultiplier = Double(1 << max(0, nextAttempt - 1))
         let delay = min(backoffMultiplier * webProxyRetryBaseDelaySeconds, maxWebProxyRetryDelaySeconds)
         
         DispatchQueue.main.async {
             self.isReady = false
             self.status = "🔄 \(self.activeWebProxyName) failed — retrying (\(nextAttempt)/\(maxAttempts))"
+            onScheduled?("🔄 \(self.activeWebProxyName) failed — switching web proxy…")
         }
         
         let retryWork = DispatchWorkItem { [weak self] in
