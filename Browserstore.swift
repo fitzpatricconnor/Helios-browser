@@ -118,7 +118,7 @@ class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
             }
             fetchURL = pURL
             session = URLSession(configuration: config)
-            let wp = pm.webProxies[pm.activeWebProxyIndex]
+            let wp = pm.activeWebProxy
             print("🔀 \(realURL.host ?? "?") via \(wp.name)")        }
 
         var req = URLRequest(url: fetchURL)
@@ -187,7 +187,10 @@ class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
             task.didReceive(httpResponse)
             task.didReceive(data)
             task.didFinish()
-            DispatchQueue.main.async { ProxyManager.shared.stopCycling() }
+            DispatchQueue.main.async {
+                ProxyManager.shared.stopCycling()
+                ProxyManager.shared.markWebProxySuccess()
+            }
             print("✅ \(realURL.host ?? "?") \(data.count) bytes")
         }.resume()
     }
@@ -339,6 +342,7 @@ class NavDelegate: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         store?.isLoading = false; store?.errorMsg = nil
         store?.addHistory()
         ProxyManager.shared.stopCycling()
+        ProxyManager.shared.markWebProxySuccess()
         wv.evaluateJavaScript(pageFixJS) { _, _ in }
     }
     func webView(_ wv: WKWebView, didFailProvisionalNavigation _: WKNavigation!, withError error: Error) {
@@ -354,6 +358,8 @@ class NavDelegate: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
             }
         } else if pm.isCycling {
             store?.errorMsg = "🔄 Trying \(proxyName)…\n\(pm.currentProxyIndex + 1)/\(pm.workingProxies.count) services"
+        } else if pm.scheduleWebProxyRetry(reloadAction: { [weak self] in self?.store?.reload() }) {
+            store?.errorMsg = "🔄 \(proxyName) failed — switching web proxy…"
         } else {
             store?.errorMsg = "❌ \(proxyName) failed (error \(c))\nTap New Proxy to try again."
         }
