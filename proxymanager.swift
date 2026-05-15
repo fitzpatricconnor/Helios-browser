@@ -20,6 +20,7 @@ class ProxyManager: ObservableObject {
     private var pendingWebProxyRetry: DispatchWorkItem?
     private let activeWebProxyIndexKey = "orion_active_web_proxy_index"
     private let maxWebProxyRetryAttempts = 3
+    private let webProxyRetryBaseDelaySeconds = 0.8
     
     let silentAuth = SilentAuthDelegate()
     
@@ -156,6 +157,10 @@ class ProxyManager: ObservableObject {
         pendingWebProxyRetry = nil
     }
     
+    private var canRetryWebProxy: Bool {
+        !isDirectMode && best == nil && webProxies.count > 1
+    }
+    
     @discardableResult
     func switchToNextWebProxy(manual: Bool, completion: (() -> Void)? = nil) -> Bool {
         guard webProxies.count > 1 else {
@@ -186,7 +191,7 @@ class ProxyManager: ObservableObject {
     
     @discardableResult
     func scheduleWebProxyRetry(reloadAction: @escaping () -> Void) -> Bool {
-        guard !isDirectMode, best == nil, webProxies.count > 1 else { return false }
+        guard canRetryWebProxy else { return false }
         let maxAttempts = min(maxWebProxyRetryAttempts, webProxies.count - 1)
         guard webProxyRetryAttempt < maxAttempts else {
             resetWebProxyRetries()
@@ -199,7 +204,7 @@ class ProxyManager: ObservableObject {
         pendingWebProxyRetry?.cancel()
         webProxyRetryAttempt += 1
         let attempt = webProxyRetryAttempt
-        let delay = min(pow(2.0, Double(attempt - 1)) * 0.8, 3.0)
+        let delay = min(pow(2.0, Double(attempt - 1)) * webProxyRetryBaseDelaySeconds, 3.0)
         
         DispatchQueue.main.async {
             self.isReady = false
