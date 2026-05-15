@@ -124,11 +124,13 @@ class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
         var req = URLRequest(url: fetchURL)
         req.httpMethod = task.request.httpMethod ?? "GET"
         req.httpBody   = task.request.httpBody
-        req.setValue(
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-            forHTTPHeaderField: "User-Agent"
-        )
-        req.setValue("https://helios-browser.app", forHTTPHeaderField: "Origin")
+        task.request.allHTTPHeaderFields?.forEach { req.setValue($1, forHTTPHeaderField: $0) }
+        if req.value(forHTTPHeaderField: "User-Agent") == nil {
+            req.setValue(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+                forHTTPHeaderField: "User-Agent"
+            )
+        }
 
         session.dataTask(with: req) { [weak self] (data: Data?, response: URLResponse?, error: Error?) in
             guard let self else { return }
@@ -155,28 +157,19 @@ class ProxySchemeHandler: NSObject, WKURLSchemeHandler {
             self.lock.lock(); let c2 = self.cancelledTasks.contains(taskID); self.lock.unlock()
             if c2 { return }
 
-            // Synthesise a proper HTTP response for WKWebView
-            var contentType = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? "text/html; charset=utf-8"
-            // Check only the first 512 bytes for HTML markers to avoid scanning large responses
-            let probe = data.prefix(512)
-            if let snippet = String(data: probe, encoding: .utf8) ?? String(data: probe, encoding: .isoLatin1) {
-                let lower = snippet.lowercased()
-                if lower.contains("<!doctype html") || lower.contains("<html") {
-                    contentType = "text/html; charset=utf-8"
-                }
+            var statusCode = 200
+            var headers: [String: String] = ["Access-Control-Allow-Origin": "*"]
+            if let http = response as? HTTPURLResponse {
+                statusCode = http.statusCode
+                http.allHeaderFields.forEach { headers[String(describing: $0.key)] = String(describing: $0.value) }
             }
-            if contentType.lowercased().hasPrefix("text/") && !contentType.lowercased().contains("charset") {
-                contentType += "; charset=utf-8"
+            if headers["Content-Type"] == nil {
+                headers["Content-Type"] = "text/html; charset=utf-8"
             }
-
-            let headers: [String: String] = [
-                "Content-Type":   contentType,
-                "Content-Length": "\(data.count)",
-                "Access-Control-Allow-Origin": "*",
-            ]
+            headers["Content-Length"] = "\(data.count)"
             guard let httpResponse = HTTPURLResponse(
                 url: realURL,
-                statusCode: 200,
+                statusCode: statusCode,
                 httpVersion: "HTTP/1.1",
                 headerFields: headers
             ) else {
@@ -335,6 +328,24 @@ class BrowserStore: ObservableObject {
 class NavDelegate: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     weak var store: BrowserStore?
     
+    func webView(_ wv: WKWebView, decidePolicyFor action: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        let pm = ProxyManager.shared
+        if !pm.isDirectMode, pm.best == nil,
+           let url = action.request.url,
+           let scheme = url.scheme?.lowercased(),
+           (scheme == "http" || scheme == "https") {
+            var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            comps?.scheme = "proxy-https"
+            if let proxied = comps?.url {
+                wv.load(URLRequest(url: proxied))
+                decisionHandler(.cancel)
+                return
+            }
+        }
+        decisionHandler(.allow)
+    }
+    
     func webView(_ wv: WKWebView, didStartProvisionalNavigation _: WKNavigation!) {
         store?.isLoading = true; store?.errorMsg = nil
     }
@@ -369,8 +380,10 @@ class NavDelegate: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         }
     }
     func webView(_ wv: WKWebView, didFail _: WKNavigation!, withError error: Error) {
-        if (error as NSError).code == NSURLErrorCancelled { return }
+        let c = (error as NSError).code
+        if c == NSURLErrorCancelled { return }
         store?.isLoading = false
+        store?.errorMsg = "❌ \(ProxyManager.shared.activeWebProxyName) failed (error \(c))\nTap New Proxy to try again."
     }
     func webView(_ wv: WKWebView, createWebViewWith _: WKWebViewConfiguration,
                  for action: WKNavigationAction, windowFeatures _: WKWindowFeatures) -> WKWebView? {
