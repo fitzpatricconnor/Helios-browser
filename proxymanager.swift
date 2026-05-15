@@ -193,6 +193,7 @@ class ProxyManager: ObservableObject {
     @discardableResult
     func scheduleWebProxyRetry(reloadAction: @escaping () -> Void) -> Bool {
         guard canRetryWebProxy else { return false }
+        // Retry at most one pass across alternates, capped by maxWebProxyRetryAttempts.
         let maxAttempts = min(maxWebProxyRetryAttempts, webProxies.count - 1)
         let nextAttempt = webProxyRetryAttempt + 1
         guard nextAttempt <= maxAttempts else {
@@ -205,7 +206,8 @@ class ProxyManager: ObservableObject {
         
         pendingWebProxyRetry?.cancel()
         webProxyRetryAttempt = nextAttempt
-        let delay = min(pow(2.0, Double(nextAttempt - 1)) * webProxyRetryBaseDelaySeconds, maxWebProxyRetryDelaySeconds)
+        let backoffMultiplier = Double(1 << max(0, nextAttempt - 1))
+        let delay = min(backoffMultiplier * webProxyRetryBaseDelaySeconds, maxWebProxyRetryDelaySeconds)
         
         DispatchQueue.main.async {
             self.isReady = false
