@@ -195,6 +195,7 @@ class ProxyManager: ObservableObject {
         guard isWebProxyRetryAllowed else { return false }
         // Retry at most one pass across alternates, excluding the current proxy.
         let maxAttempts = min(maxWebProxyRetryAttempts, webProxies.count - 1)
+        guard maxAttempts > 0 else { return false }
         let nextAttempt = webProxyRetryAttempt + 1
         guard nextAttempt <= maxAttempts else {
             resetWebProxyRetries()
@@ -206,8 +207,7 @@ class ProxyManager: ObservableObject {
         
         pendingWebProxyRetry?.cancel()
         webProxyRetryAttempt = nextAttempt
-        // 2^(nextAttempt-1) exponential backoff multiplier.
-        let backoffMultiplier = Double(1 << max(0, nextAttempt - 1))
+        let backoffMultiplier = pow(2.0, Double(nextAttempt - 1))
         let delay = min(backoffMultiplier * webProxyRetryBaseDelaySeconds, maxWebProxyRetryDelaySeconds)
         
         DispatchQueue.main.async {
@@ -218,8 +218,14 @@ class ProxyManager: ObservableObject {
         
         let retryWork = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            _ = self.switchToNextWebProxy(manual: false) {
+            let switched = self.switchToNextWebProxy(manual: false) {
                 reloadAction()
+            }
+            if !switched {
+                DispatchQueue.main.async {
+                    self.status = "❌ No alternate web proxy available"
+                    self.isReady = false
+                }
             }
         }
         pendingWebProxyRetry = retryWork
