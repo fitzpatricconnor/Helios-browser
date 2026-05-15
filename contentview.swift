@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct ContentView: View {
     @StateObject    private var store = BrowserStore()
@@ -142,7 +145,7 @@ struct ContentView: View {
                     TextField("Search or enter address…", text: $inputText)
                         .font(.system(size: 13)).foregroundColor(Color.oText)
                         .autocapitalization(.none).disableAutocorrection(true)
-                        .keyboardType(.URL).focused($focused).onSubmit { navigate() }
+                        .keyboardType(.URL).submitLabel(.go).focused($focused).onSubmit { navigate() }
                     if !inputText.isEmpty {
                         Button { inputText = "" } label: {
                             Image(systemName: "xmark.circle.fill").foregroundColor(Color.oMuted).font(.system(size: 12))
@@ -501,17 +504,25 @@ struct ContentView: View {
     // MARK: - Navigate
     func navigate(with url: String? = nil) {
         let raw = (url ?? inputText).trimmingCharacters(in: .whitespaces)
+        dismissKeyboard()
         guard !raw.isEmpty else { return }
         guard proxy.isReady else {
             store.errorMsg = "⏳ Still finding a proxy…\nPlease wait then try again."
             return
         }
-        inputText = raw; focused = false; showStart = false
+        inputText = raw; showStart = false
         if store.activeTabIndex < store.tabs.count {
             store.tabs[store.activeTabIndex].url   = raw
             store.tabs[store.activeTabIndex].title = raw
         }
         store.load(raw)
+    }
+    
+    private func dismissKeyboard() {
+        focused = false
+        #if canImport(UIKit)
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        #endif
     }
     
     // MARK: - Time Ago

@@ -33,6 +33,11 @@ class ProxyManager: ObservableObject {
         WebProxy(name: "corsproxy.org", baseURL: "https://corsproxy.org/?",                  country: "🌐"),
     ]
     @Published var activeWebProxyIndex: Int = 0
+    private let webProxyQueryAllowed: CharacterSet = {
+        var set = CharacterSet.urlQueryAllowed
+        set.remove(charactersIn: "&=?+#")
+        return set
+    }()
     
     private func clampedWebProxyIndex(_ index: Int) -> Int {
         guard !webProxies.isEmpty else { return 0 }
@@ -50,12 +55,16 @@ class ProxyManager: ObservableObject {
     }
     
     func proxiedURL(for urlString: String) -> String {
-        let encoded = urlString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? urlString
+        let encoded = urlString.addingPercentEncoding(withAllowedCharacters: webProxyQueryAllowed) ?? urlString
         return activeWebProxy.baseURL + encoded
     }
     
     var activeWebProxyName: String {
         webProxies.isEmpty ? "web proxy" : activeWebProxy.name
+    }
+    
+    var isUsingWebProxyMode: Bool {
+        !isDirectMode && best == nil
     }
     
     init() {
