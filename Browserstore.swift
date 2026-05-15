@@ -386,7 +386,8 @@ class NavDelegate: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
         let c = (error as NSError).code
         if c == NSURLErrorCancelled { return }
         store?.isLoading = false
-        store?.errorMsg = "❌ \(ProxyManager.shared.activeWebProxyName) failed (error \(c))\nTap New Proxy to try again."
+        let detail = (error as NSError).localizedDescription
+        store?.errorMsg = "❌ \(ProxyManager.shared.activeWebProxyName) failed\n\(detail)\nTap New Proxy to try again."
     }
     func webView(_ wv: WKWebView, createWebViewWith _: WKWebViewConfiguration,
                  for action: WKNavigationAction, windowFeatures _: WKWindowFeatures) -> WKWebView? {

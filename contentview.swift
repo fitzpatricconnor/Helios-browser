@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct ContentView: View {
     @StateObject    private var store = BrowserStore()
@@ -501,7 +504,7 @@ struct ContentView: View {
     // MARK: - Navigate
     func navigate(with url: String? = nil) {
         let raw = (url ?? inputText).trimmingCharacters(in: .whitespaces)
-        focused = false
+        dismissKeyboard()
         guard !raw.isEmpty else { return }
         guard proxy.isReady else {
             store.errorMsg = "⏳ Still finding a proxy…\nPlease wait then try again."
@@ -513,6 +516,13 @@ struct ContentView: View {
             store.tabs[store.activeTabIndex].title = raw
         }
         store.load(raw)
+    }
+    
+    private func dismissKeyboard() {
+        focused = false
+        #if canImport(UIKit)
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        #endif
     }
     
     // MARK: - Time Ago
