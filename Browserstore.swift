@@ -358,7 +358,10 @@ class NavDelegate: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegat
             }
         } else if pm.isCycling {
             store?.errorMsg = "🔄 Trying \(proxyName)…\n\(pm.currentProxyIndex + 1)/\(pm.workingProxies.count) services"
-        } else if pm.scheduleWebProxyRetry(reloadAction: { [weak self] in self?.store?.reload() }) {
+        } else if pm.scheduleWebProxyRetry(reloadAction: { [weak self] in
+            guard let self, let store = self.store else { return }
+            store.reload()
+        }) {
             store?.errorMsg = "🔄 \(proxyName) failed — switching web proxy…"
         } else {
             store?.errorMsg = "❌ \(proxyName) failed (error \(c))\nTap New Proxy to try again."
